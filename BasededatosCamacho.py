@@ -89,6 +89,10 @@ def cargar_datos():
         
         df.columns = [c.strip() for c in df.columns]
         
+        # Eliminar las columnas Unnamed del CSV antes de subirlo por primera vez
+        columnas_validas = [c for c in df.columns if not c.startswith("Unnamed")]
+        df = df[columnas_validas]
+        
         from sqlalchemy import create_engine
         engine = create_engine(DB_URL.replace("postgresql://", "postgresql+psycopg2://"))
         df.to_sql('ventas', engine, if_exists='replace', index=False)
@@ -97,6 +101,10 @@ def cargar_datos():
         df = pd.read_sql("SELECT * FROM ventas", conn)
     
     conn.close()
+    
+    # Limpieza inmediata de columnas 'Unnamed' que vengan de la base de datos vieja
+    columnas_validas = [c for c in df.columns if not c.startswith("Unnamed")]
+    df = df[columnas_validas]
     
     df["FECHA_DT"] = pd.to_datetime(df["FECHA"], errors='coerce', dayfirst=True)
     df["ANIO"] = df["FECHA_DT"].dt.year.fillna(datetime.now().year).astype(int)
@@ -178,12 +186,12 @@ def verificar_y_ejecutar_respaldo(df_limpio):
             
     conn.close()
 
-    columnas_validas = [c for c in df.columns if not c.startswith("Unnamed")]
-    df = df[columnas_validas]
-    
 def guardar_datos_sql(df):
     from sqlalchemy import create_engine
-    df_limpio = df.drop(columns=["FECHA_DT", "ANIO"], errors='ignore')
+    # Asegurar que ninguna columna Unnamed se intente guardar de nuevo
+    columnas_limpias = [c for c in df.columns if not c.startswith("Unnamed")]
+    df_limpio = df[columnas_limpias].drop(columns=["FECHA_DT", "ANIO"], errors='ignore')
+    
     engine = create_engine(DB_URL.replace("postgresql://", "postgresql+psycopg2://"))
     df_limpio.to_sql('ventas', engine, if_exists='replace', index=False)
     
