@@ -12,6 +12,15 @@ from email.mime.base import MIMEBase
 from email import encoders
 import io
 
+# =========================================================
+# CONFIGURACIÓN DE LA PÁGINA (¡MÁS GRANDE Y ANCHO PARA PC!)
+# =========================================================
+st.set_page_config(
+    page_title="Base de Datos - Camacho Construcciones",
+    page_icon="📊",
+    layout="wide" # <-- Esto hace que todo el sistema aproveche toda la pantalla de la computadora
+)
+
 # -----------------------------------------
 if 'ultimo_eliminado' not in st.session_state:
     st.session_state['ultimo_eliminado'] = None
@@ -64,15 +73,15 @@ def confirmar_eliminar(indice, fila):
 # =========================================================
 # 3. CONFIGURACIÓN DE LA PÁGINA Y BASE DE DATOS
 # =========================================================
-st.markdown("<h1 style='font-size: 100px;'>Base de Datos - Camacho Construcciones</h1>", unsafe_allow_html=True)
-st.image("logo.png", width=200) 
-st.title("Base de Datos - Camacho Construcciones")
+st.markdown("<h1 style='font-size: 45px; font-weight: bold;'>Base de Datos - Camacho Construcciones</h1>", unsafe_allow_html=True)
+st.image("logo.png", width=180) 
 
+# Caching para que cargue ultra rápido y no sature la base de datos
+@st.cache_data(ttl=600)
 def cargar_datos():
     conn = obtener_conexion()
     cursor = conn.cursor()
     
-    # Verificar si la tabla existe en PostgreSQL
     cursor.execute("""
         SELECT EXISTS (
             SELECT FROM information_schema.tables 
@@ -86,23 +95,22 @@ def cargar_datos():
         SHEET_ID = "1fgY5F9PsYMu-7mff8vzAieA_yezmo0-D"
         URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
         df = pd.read_csv(URL)
-        
         df.columns = [c.strip() for c in df.columns]
         
-        # Eliminar las columnas Unnamed del CSV antes de subirlo por primera vez
         columnas_validas = [c for c in df.columns if not c.startswith("Unnamed")]
         df = df[columnas_validas]
         
         from sqlalchemy import create_engine
         engine = create_engine(DB_URL.replace("postgresql://", "postgresql+psycopg2://"))
         df.to_sql('ventas', engine, if_exists='replace', index=False)
-        st.rerun()
+        conn.close()
+        return df
     else:
         df = pd.read_sql("SELECT * FROM ventas", conn)
     
     conn.close()
     
-    # Limpieza inmediata de columnas 'Unnamed' que vengan de la base de datos vieja
+    # Limpieza inmediata de columnas 'Unnamed'
     columnas_validas = [c for c in df.columns if not c.startswith("Unnamed")]
     df = df[columnas_validas]
     
@@ -113,7 +121,6 @@ def cargar_datos():
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True).replace('nan', '')
 
-    # --- CORRECCIÓN INTEGRADA: LIMPIEZA Y PORCENTAJES AUTOMÁTICOS ---
     if "VALOR" in df.columns:
         df["VALOR"] = df["VALOR"].astype(str).replace({r'\$': '', r',': '', r'\s': ''}, regex=True)
         df["VALOR"] = pd.to_numeric(df["VALOR"], errors='coerce').fillna(0)
@@ -188,13 +195,14 @@ def verificar_y_ejecutar_respaldo(df_limpio):
 
 def guardar_datos_sql(df):
     from sqlalchemy import create_engine
-    # Asegurar que ninguna columna Unnamed se intente guardar de nuevo
     columnas_limpias = [c for c in df.columns if not c.startswith("Unnamed")]
     df_limpio = df[columnas_limpias].drop(columns=["FECHA_DT", "ANIO"], errors='ignore')
     
     engine = create_engine(DB_URL.replace("postgresql://", "postgresql+psycopg2://"))
     df_limpio.to_sql('ventas', engine, if_exists='replace', index=False)
     
+    # Limpiamos la caché para que obligatoriamente vuelva a descargar los nuevos datos actualizados
+    st.cache_data.clear()
     verificar_y_ejecutar_respaldo(df_limpio)
 
 df_base = cargar_datos()
@@ -215,7 +223,8 @@ with tab_visualizar:
             label="📥 Descargar a Excel",
             data=csv,
             file_name=f'Base_Camacho_{datetime.now().strftime("%d-%m-%Y")}.csv',
-            mime='text/csv'
+            mime='text/csv',
+            use_container_width=True
         )
     
     opcion_metricas = st.radio("Selecciona el período a consultar:", ["Esta Semana", "Este Mes", "Este Año", "Total"], horizontal=True)
@@ -280,7 +289,8 @@ with tab_visualizar:
         if col in df_vista.columns:
             df_vista[col] = df_vista[col].map("${:,.0f}".format)
 
-    st.dataframe(df_vista.drop(columns=["FECHA_DT", "ANIO"], errors='ignore'), use_container_width=True)
+    # El cuadro ahora ocupará todo el tamaño gigante horizontal de la pantalla de PC
+    st.dataframe(df_vista.drop(columns=["FECHA_DT", "ANIO"], errors='ignore'), use_container_width=True, height=500)
 
     if not df_metricas.empty:
         st.write("")
