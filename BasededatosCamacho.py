@@ -178,6 +178,9 @@ def verificar_y_ejecutar_respaldo(df_limpio):
             
     conn.close()
 
+    columnas_validas = [c for c in df.columns if not c.startswith("Unnamed")]
+    df = df[columnas_validas]
+    
 def guardar_datos_sql(df):
     from sqlalchemy import create_engine
     df_limpio = df.drop(columns=["FECHA_DT", "ANIO"], errors='ignore')
