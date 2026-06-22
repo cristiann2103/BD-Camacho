@@ -38,10 +38,12 @@ def obtener_conexion():
 
 # =========================================================
 # 2. FUNCIONES Y HERRAMIENTAS
-
 def mostrar_mensaje_central(mensaje, tipo="success"):
-    icono = "✅" if tipo == "success" else "❌" if tipo == "error" else "ℹ️"
-    st.toast(mensaje, icon=icono)
+    color_fondo = "rgba(40, 167, 69, 0.95)" if tipo == "success" else "rgba(220, 53, 69, 0.95)" if tipo == "error" else "rgba(0, 123, 255, 0.95)"
+    marcador = st.empty()
+    marcador.markdown(f"""...""", unsafe_allow_html=True)
+    time.sleep(2)
+    marcador.empty()
 
 @st.dialog("⚠️ Confirmar eliminación")
 def confirmar_eliminar(id_registro, fila):
