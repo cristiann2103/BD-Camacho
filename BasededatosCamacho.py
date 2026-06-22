@@ -32,10 +32,11 @@ if 'ultimo_eliminado' not in st.session_state:
 
 conn_st = st.connection("neon", type="sql")
 
+from sqlalchemy import text  # ← agrega este import arriba del archivo
+
 def ejecutar_query(sql, params=None):
-    """Ejecuta INSERT, UPDATE o DELETE con reconexión automática."""
     with conn_st.session as session:
-        session.execute(st.text(sql), params or {})
+        session.execute(text(sql), params or {})
         session.commit()
 
 # =========================================================
