@@ -41,7 +41,14 @@ def obtener_conexion():
 def mostrar_mensaje_central(mensaje, tipo="success"):
     color_fondo = "rgba(40, 167, 69, 0.95)" if tipo == "success" else "rgba(220, 53, 69, 0.95)" if tipo == "error" else "rgba(0, 123, 255, 0.95)"
     marcador = st.empty()
-    marcador.markdown(f"""...""", unsafe_allow_html=True)
+    marcador.markdown(f"""
+        <div style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); 
+                    background-color: {color_fondo}; color: white; padding: 20px 40px; 
+                    border-radius: 10px; z-index: 99999; box-shadow: 0px 8px 20px rgba(0,0,0,0.3);
+                    pointer-events: none; font-size: 1.3rem; font-weight: bold; text-align: center;">
+            {mensaje}
+        </div>
+    """, unsafe_allow_html=True)
     time.sleep(2)
     marcador.empty()
 
