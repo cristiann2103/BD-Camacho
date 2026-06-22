@@ -104,6 +104,15 @@ def cargar_datos():
     for col in ["CEDULA", "TELEFONO", "ID"]:
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True).replace('nan', '')
+
+    # --- LIMPIEZA DE NÚMEROS Y DINERO ---
+    columnas_dinero = ["VALOR", "Pago Vanti (8%)", "Comision Vendedor (35%)", "Ganancia Camacho"]
+    for col in columnas_dinero:
+        if col in df.columns:
+            # Quitamos los signos de $, espacios y comas que vienen de Google Sheets
+            df[col] = df[col].astype(str).replace({r'\$': '', r',': '', r'\s': ''}, regex=True)
+            # Lo forzamos a ser un número real para que funcionen las sumas
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
     return df
 
