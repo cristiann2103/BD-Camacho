@@ -105,14 +105,16 @@ def cargar_datos():
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True).replace('nan', '')
 
-    # --- LIMPIEZA DE NÚMEROS Y DINERO ---
-    columnas_dinero = ["VALOR", "Pago Vanti (8%)", "Comision Vendedor (35%)", "Ganancia Camacho"]
-    for col in columnas_dinero:
-        if col in df.columns:
-            # Quitamos los signos de $, espacios y comas que vienen de Google Sheets
-            df[col] = df[col].astype(str).replace({r'\$': '', r',': '', r'\s': ''}, regex=True)
-            # Lo forzamos a ser un número real para que funcionen las sumas
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    # --- CORRECCIÓN INTEGRADA: LIMPIEZA Y PORCENTAJES AUTOMÁTICOS ---
+    if "VALOR" in df.columns:
+        df["VALOR"] = df["VALOR"].astype(str).replace({r'\$': '', r',': '', r'\s': ''}, regex=True)
+        df["VALOR"] = pd.to_numeric(df["VALOR"], errors='coerce').fillna(0)
+    else:
+        df["VALOR"] = 0
+        
+    df["Pago Vanti (8%)"] = df["VALOR"] * 0.08
+    df["Comision Vendedor (35%)"] = df["VALOR"] * 0.35
+    df["Ganancia Camacho"] = df["VALOR"] * 0.57
             
     return df
 
