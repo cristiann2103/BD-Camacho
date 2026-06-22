@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-import sqlite3
+import psycopg2 
+from psycopg2 import extras
 import time
 import unicodedata
 import os
@@ -10,24 +11,28 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 import io
+
 # -----------------------------------------
 if 'ultimo_eliminado' not in st.session_state:
     st.session_state['ultimo_eliminado'] = None
 
-if 'ultimo_eliminado' not in st.session_state:
-    st.session_state['ultimo_eliminado'] = None
+# =========================================================
+# 1. ENLACE DE CONEXIÓN (SECRETS DE STREAMLIT)
+# =========================================================
+DB_URL = st.secrets.get("DATABASE_URL")
+
+if not DB_URL:
+    st.error("⚠️ Faltan los Secrets. Por favor, ve a la configuración de Streamlit y asegúrate de haber puesto tu DATABASE_URL correctamente.")
+    st.stop() 
+
+def obtener_conexion():
+    return psycopg2.connect(DB_URL)
 
 # =========================================================
-# 1. FUNCIONES Y HERRAMIENTAS
+# 2. FUNCIONES Y HERRAMIENTAS
 # =========================================================
 def mostrar_mensaje_central(mensaje, tipo="success"):
-    if tipo == "success":
-        color_fondo = "rgba(40, 167, 69, 0.95)"
-    elif tipo == "error":
-        color_fondo = "rgba(220, 53, 69, 0.95)"
-    else:
-        color_fondo = "rgba(0, 123, 255, 0.95)"
-        
+    color_fondo = "rgba(40, 167, 69, 0.95)" if tipo == "success" else "rgba(220, 53, 69, 0.95)" if tipo == "error" else "rgba(0, 123, 255, 0.95)"
     marcador = st.empty()
     marcador.markdown(f"""
         <div style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); 
@@ -37,7 +42,6 @@ def mostrar_mensaje_central(mensaje, tipo="success"):
             {mensaje}
         </div>
     """, unsafe_allow_html=True)
-    
     time.sleep(2)
     marcador.empty()
 
@@ -58,26 +62,37 @@ def confirmar_eliminar(indice, fila):
         st.rerun()
 
 # =========================================================
-# 2. CONFIGURACIÓN DE LA PÁGINA Y BASE DE DATOS
+# 3. CONFIGURACIÓN DE LA PÁGINA Y BASE DE DATOS
 # =========================================================
-st.set_page_config(page_title="Base de Datos Camacho Construcciones", layout="wide")
+st.markdown("<h1 style='font-size: 100px;'>Base de Datos - Camacho Construcciones</h1>", unsafe_allow_html=True)
 st.image("logo.png", width=200) 
 st.title("Base de Datos - Camacho Construcciones")
 
-DB_NAME = "base_camacho.db"
-
 def cargar_datos():
-    conn = sqlite3.connect(DB_NAME)
+    conn = obtener_conexion()
     cursor = conn.cursor()
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='ventas'")
-    tabla_existe = cursor.fetchone()
+    
+    # Verificar si la tabla existe en PostgreSQL
+    cursor.execute("""
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables 
+            WHERE table_schema = 'public' AND table_name = 'ventas'
+        );
+    """)
+    tabla_existe = cursor.fetchone()[0]
     
     if not tabla_existe:
-        st.info("🔄 Migrando datos iniciales...")
+        st.info("🔄 Migrando datos iniciales a la nube de Neon. Esto puede tardar unos segundos...")
         SHEET_ID = "1fgY5F9PsYMu-7mff8vzAieA_yezmo0-D"
         URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
         df = pd.read_csv(URL)
-        df.to_sql('ventas', conn, if_exists='replace', index=False)
+        
+        df.columns = [c.strip() for c in df.columns]
+        
+        from sqlalchemy import create_engine
+        engine = create_engine(DB_URL.replace("postgresql://", "postgresql+psycopg2://"))
+        df.to_sql('ventas', engine, if_exists='replace', index=False)
+        st.rerun()
     else:
         df = pd.read_sql("SELECT * FROM ventas", conn)
     
@@ -93,31 +108,26 @@ def cargar_datos():
     return df
 
 def enviar_respaldo_automatico(df_limpio):
-    """Función interna que envía el Excel por correo"""
-    correo_emisor = "camachoconstruccionespqr@gmail.com"  # PON TU CORREO AQUÍ
-    password = "inunlpcwyxqhwnkx" # PON TU CONTRASEÑA DE APLICACIÓN AQUÍ
-    correo_receptor = "camachoconstruccionespqr@gmail.com"      # PON EL CORREO QUE RECIBIRÁ EL RESPALDO
+    correo_emisor = "camachoconstruccionespqr@gmail.com"
+    password = "inunlpcwyxqhwnkx"
+    correo_receptor = "camachoconstruccionespqr@gmail.com"
     
-    # 1. Crear el Excel en memoria
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
         df_limpio.to_excel(writer, index=False)
     buffer.seek(0)
     
-    # 2. Configurar el correo electrónico
     msg = MIMEMultipart()
     msg['From'] = correo_emisor
     msg['To'] = correo_receptor
     msg['Subject'] = f"📆 RESPALDO SEMANAL AUTOMÁTICO - {datetime.now().strftime('%d/%m/%Y')}"
     
-    # 3. Adjuntar el archivo de Excel
     part = MIMEBase('application', 'octet-stream')
     part.set_payload(buffer.read())
     encoders.encode_base64(part)
     part.add_header('Content-Disposition', "attachment; filename= Respaldo_Camacho_Semanal.xlsx")
     msg.attach(part)
     
-    # 4. Enviar correo
     try:
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
@@ -125,18 +135,17 @@ def enviar_respaldo_automatico(df_limpio):
         server.sendmail(correo_emisor, correo_receptor, msg.as_string())
         server.quit()
         return True
-    
     except Exception as e:
-        import streamlit as st
         st.error(f"Error enviando correo: {e}")
         return False
 
 def verificar_y_ejecutar_respaldo(df_limpio):
-    """Revisa si ya pasaron 7 días desde el último respaldo para enviar el correo"""
-    conn = sqlite3.connect(DB_NAME)
+    conn = obtener_conexion()
     cursor = conn.cursor()
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS control_respaldo (id INTEGER PRIMARY KEY, fecha TEXT)''')
+    conn.commit()
+    
     cursor.execute("SELECT fecha FROM control_respaldo WHERE id = 1")
     resultado = cursor.fetchone()
     
@@ -153,35 +162,27 @@ def verificar_y_ejecutar_respaldo(df_limpio):
             
     if debe_respaldar:
         if enviar_respaldo_automatico(df_limpio):
-            cursor.execute("INSERT OR REPLACE INTO control_respaldo (id, fecha) VALUES (1, ?)", (fecha_hoy.strftime("%Y-%m-%d"),))
+            cursor.execute("INSERT INTO control_respaldo (id, fecha) VALUES (1, %s) ON CONFLICT (id) DO UPDATE SET fecha = EXCLUDED.fecha", (fecha_hoy.strftime("%Y-%m-%d"),))
             conn.commit()
             
     conn.close()
 
-
-
 def guardar_datos_sql(df):
-    """Guarda los cambios localmente y verifica si toca el respaldo semanal"""
-    conn = sqlite3.connect(DB_NAME)
+    from sqlalchemy import create_engine
     df_limpio = df.drop(columns=["FECHA_DT", "ANIO"], errors='ignore')
-    df_limpio.to_sql('ventas', conn, if_exists='replace', index=False)
-    conn.close()
+    engine = create_engine(DB_URL.replace("postgresql://", "postgresql+psycopg2://"))
+    df_limpio.to_sql('ventas', engine, if_exists='replace', index=False)
     
-    # Llamar al proceso automático en segundo plano
     verificar_y_ejecutar_respaldo(df_limpio)
 
 df_base = cargar_datos()
 df_base = df_base.sort_values(by="FECHA_DT", ascending=False, na_position='last').reset_index(drop=True)
 
-
 # =========================================================
-# 3. INTERFAZ Y PESTAÑAS
+# 4. INTERFAZ Y PESTAÑAS
 # =========================================================
 tab_visualizar, tab_registrar, tab_editar = st.tabs(["📊 Datos Generales", "➕ Registrar Nuevo", "✏️ Editar o Eliminar"])
 
-# ---------------------------------------------------------
-# PESTAÑA 1: VISUALIZACIÓN Y BÚSQUEDA
-# ---------------------------------------------------------
 with tab_visualizar:
     col_titulo, col_boton = st.columns([3, 1])
     with col_titulo:
@@ -196,7 +197,6 @@ with tab_visualizar:
         )
     
     opcion_metricas = st.radio("Selecciona el período a consultar:", ["Esta Semana", "Este Mes", "Este Año", "Total"], horizontal=True)
-    
     hoy = pd.Timestamp(datetime.now().date())
     df_metricas = df_base.copy()
     texto_periodo = ""
@@ -243,9 +243,7 @@ with tab_visualizar:
         def limpiar_texto(texto):
             if pd.isna(texto): return ""
             return ''.join(c for c in unicodedata.normalize('NFD', str(texto)) if unicodedata.category(c) != 'Mn').lower()
-        
         criterio_limpio = limpiar_texto(criterio_busqueda)
-        
         df_filtrado = df_filtrado[
             df_filtrado.apply(lambda fila: 
                 criterio_limpio in limpiar_texto(fila["NOMBRE"]) or
@@ -257,68 +255,53 @@ with tab_visualizar:
 
     df_vista = df_filtrado.copy()
     for col in ["VALOR", "Pago Vanti (8%)", "Comision Vendedor (35%)", "Ganancia Camacho"]:
-        df_vista[col] = df_vista[col].map("${:,.0f}".format)
+        if col in df_vista.columns:
+            df_vista[col] = df_vista[col].map("${:,.0f}".format)
 
-    st.dataframe(df_vista.drop(columns=["FECHA_DT", "ANIO"]), use_container_width=True)
+    st.dataframe(df_vista.drop(columns=["FECHA_DT", "ANIO"], errors='ignore'), use_container_width=True)
 
     if not df_metricas.empty:
         st.write("")
         col_graf1, col_graf2 = st.columns(2)
-        
         with col_graf1:
             st.caption("📊 Cantidad de Ventas Realizadas por Vendedor")
             df_graf_vendedores = df_metricas.groupby("VENDEDOR").size().reset_index(name="VENTAS REALIZADAS")
             st.bar_chart(df_graf_vendedores.set_index("VENDEDOR"))
-            
         with col_graf2:
             st.caption("📈 Comparativo de Ventas vs Período Anterior")
             df_comparativo = df_base.copy()
-            
             if opcion_metricas == "Esta Semana":
                 inicio_act = hoy - pd.Timedelta(days=hoy.weekday())
                 df_act = df_comparativo[df_comparativo["FECHA_DT"] >= inicio_act]
                 df_ant = df_comparativo[(df_comparativo["FECHA_DT"] >= (inicio_act - pd.Timedelta(days=7))) & (df_comparativo["FECHA_DT"] < inicio_act)]
-                
                 nombres_dias = {0: "1-Lun", 1: "2-Mar", 2: "3-Mié", 3: "4-Jue", 4: "5-Vie", 5: "6-Sáb", 6: "7-Dom"}
                 s_act = df_act.groupby(df_act["FECHA_DT"].dt.weekday).size()
                 s_ant = df_ant.groupby(df_ant["FECHA_DT"].dt.weekday).size()
-                
                 df_plot = pd.DataFrame({"Esta Semana": s_act, "Semana Pasada": s_ant}).fillna(0)
                 df_plot.index = df_plot.index.map(nombres_dias)
-                
             elif opcion_metricas == "Este Mes":
                 df_act = df_comparativo[(df_comparativo["FECHA_DT"].dt.month == hoy.month) & (df_comparativo["FECHA_DT"].dt.year == hoy.year)]
                 mes_ant = hoy.month - 1 if hoy.month > 1 else 12
                 anio_ant = hoy.year if hoy.month > 1 else hoy.year - 1
                 df_ant = df_comparativo[(df_comparativo["FECHA_DT"].dt.month == mes_ant) & (df_comparativo["FECHA_DT"].dt.year == anio_ant)]
-                
                 s_act = df_act.groupby(df_act["FECHA_DT"].dt.day).size()
                 s_ant = df_ant.groupby(df_ant["FECHA_DT"].dt.day).size()
                 df_plot = pd.DataFrame({"Este Mes": s_act, "Mes Pasado": s_ant}).fillna(0)
-                
             elif opcion_metricas == "Este Año":
                 df_act = df_comparativo[df_comparativo["FECHA_DT"].dt.year == hoy.year]
                 df_ant = df_comparativo[df_comparativo["FECHA_DT"].dt.year == (hoy.year - 1)]
-                
                 nombres_meses = {1:"01-Ene", 2:"02-Feb", 3:"03-Mar", 4:"04-Abr", 5:"05-May", 6:"06-Jun", 7:"07-Jul", 8:"08-Ago", 9:"09-Sep", 10:"10-Oct", 11:"11-Nov", 12:"12-Dic"}
                 s_act = df_act.groupby(df_act["FECHA_DT"].dt.month).size()
                 s_ant = df_ant.groupby(df_ant["FECHA_DT"].dt.month).size()
-                
                 df_plot = pd.DataFrame({"Este Año": s_act, "Año Pasado": s_ant}).fillna(0)
                 df_plot.index = df_plot.index.map(nombres_meses)
-                
             else:
                 s_act = df_comparativo.groupby(df_comparativo["FECHA_DT"].dt.year).size()
                 df_plot = pd.DataFrame({"Ventas Históricas Totales": s_act}).fillna(0)
-                
             st.line_chart(df_plot)
 
-# ---------------------------------------------------------
-# PESTAÑA 2: REGISTRAR NUEVO
-# ---------------------------------------------------------
 with tab_registrar:
     st.subheader("📝 Agregar Nuevo Registro")
-    
     with st.form("form_nuevo", clear_on_submit=True):
         c_reg1, c_reg2, c_reg3 = st.columns(3)
         with c_reg1:
@@ -348,16 +331,11 @@ with tab_registrar:
                 "ESTADO PAGO": f_est_pago.upper(), "NUMERO DE CUENTA": f_cuenta, "OBSERVACIONES": f_observaciones,
                 "Pago Vanti (8%)": f_valor * 0.08, "Comision Vendedor (35%)": f_valor * 0.35, "Ganancia Camacho": f_valor * 0.57
             }])
-            
             df_actualizado = pd.concat([nueva_fila, df_base.drop(columns=["FECHA_DT", "ANIO"], errors='ignore')], ignore_index=True)
             guardar_datos_sql(df_actualizado)
-            
             mostrar_mensaje_central("✅ ¡Cliente registrado con éxito!", "success")
             st.rerun()
 
-# ---------------------------------------------------------
-# PESTAÑA 3: EDITAR O ELIMINAR
-# ---------------------------------------------------------
 with tab_editar:
     st.subheader("⚙️ Modificar o Eliminar un Registro")
     if st.session_state['ultimo_eliminado'] is not None:
@@ -453,7 +431,3 @@ with tab_editar:
                 
             if btn_eliminar:
                 confirmar_eliminar(indice_real, fila_datos)
-
-    # =========================================================
-# BOTÓN DE DIAGNÓSTICO TEMPORAL (BORRAR CUANDO FUNCIONE)
-# =============================================
