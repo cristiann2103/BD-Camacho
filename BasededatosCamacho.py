@@ -13,15 +13,14 @@ from email import encoders
 import io
 
 # =========================================================
-# CONFIGURACIÓN DE LA PÁGINA (¡MÁS GRANDE Y ANCHO PARA PC!)
+# CONFIGURACIÓN DE LA PÁGINA
 # =========================================================
 st.set_page_config(
     page_title="Base de Datos - Camacho Construcciones",
     page_icon="📊",
-    layout="wide" # <-- Esto hace que todo el sistema aproveche toda la pantalla de la computadora
+    layout="wide"
 )
 
-# -----------------------------------------
 if 'ultimo_eliminado' not in st.session_state:
     st.session_state['ultimo_eliminado'] = None
 
@@ -55,16 +54,22 @@ def mostrar_mensaje_central(mensaje, tipo="success"):
     marcador.empty()
 
 @st.dialog("⚠️ Confirmar eliminación")
-def confirmar_eliminar(indice, fila):
+def confirmar_eliminar(id_registro, fila):
     st.write("¿Estás seguro de que deseas eliminar este registro de forma permanente?")
     st.info(f"👤 **Nombre:** {fila['NOMBRE']}\n\n💳 **Cédula:** {fila['CEDULA']}\n\n🆔 **ID:** {fila['ID']}\n\n💰 **Valor:** ${fila['VALOR']:,.0f}")
     
     col1, col2 = st.columns(2)
     if col1.button("✅ Sí, eliminar"):
         st.session_state['ultimo_eliminado'] = fila.to_dict()
-        df_base_actual = cargar_datos()
-        df_nuevo = df_base_actual.drop(index=indice).reset_index(drop=True)
-        guardar_datos_sql(df_nuevo)
+        
+        # Eliminación dirigida mediante SQL directo
+        conn = obtener_conexion()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM ventas WHERE \"ID\" = %s", (str(id_registro),))
+        conn.commit()
+        conn.close()
+        
+        st.cache_data.clear()
         st.toast("🗑️ Registro eliminado. (Puedes deshacerlo en la pestaña de Edición)", icon="🚨")
         st.rerun()
     if col2.button("❌ No, cancelar"):
@@ -76,7 +81,6 @@ def confirmar_eliminar(indice, fila):
 st.markdown("<h1 style='font-size: 45px; font-weight: bold;'>Base de Datos - Camacho Construcciones</h1>", unsafe_allow_html=True)
 st.image("logo.png", width=180) 
 
-# Caching para que cargue ultra rápido y no sature la base de datos
 @st.cache_data(ttl=600)
 def cargar_datos():
     conn = obtener_conexion()
@@ -110,7 +114,6 @@ def cargar_datos():
     
     conn.close()
     
-    # Limpieza inmediata de columnas 'Unnamed'
     columnas_validas = [c for c in df.columns if not c.startswith("Unnamed")]
     df = df[columnas_validas]
     
@@ -162,19 +165,16 @@ def enviar_respaldo_automatico(df_limpio):
         server.quit()
         return True
     except Exception as e:
-        st.error(f"Error enviando correo: {e}")
         return False
 
-def verificar_y_ejecutar_respaldo(df_limpio):
+def verificar_y_ejecutar_respaldo():
     conn = obtener_conexion()
     cursor = conn.cursor()
-    
     cursor.execute('''CREATE TABLE IF NOT EXISTS control_respaldo (id INTEGER PRIMARY KEY, fecha TEXT)''')
     conn.commit()
     
     cursor.execute("SELECT fecha FROM control_respaldo WHERE id = 1")
     resultado = cursor.fetchone()
-    
     fecha_hoy = datetime.now().date()
     debe_respaldar = False
     
@@ -182,28 +182,15 @@ def verificar_y_ejecutar_respaldo(df_limpio):
         debe_respaldar = True
     else:
         ultima_fecha = datetime.strptime(resultado[0], "%Y-%m-%d").date()
-        dias_transcurridos = (fecha_hoy - ultima_fecha).days
-        if dias_transcurridos >= 7:
+        if (fecha_hoy - ultima_fecha).days >= 7:
             debe_respaldar = True
             
     if debe_respaldar:
-        if enviar_respaldo_automatico(df_limpio):
+        df_respaldo = pd.read_sql("SELECT * FROM ventas", conn)
+        if enviar_respaldo_automatico(df_respaldo):
             cursor.execute("INSERT INTO control_respaldo (id, fecha) VALUES (1, %s) ON CONFLICT (id) DO UPDATE SET fecha = EXCLUDED.fecha", (fecha_hoy.strftime("%Y-%m-%d"),))
             conn.commit()
-            
     conn.close()
-
-def guardar_datos_sql(df):
-    from sqlalchemy import create_engine
-    columnas_limpias = [c for c in df.columns if not c.startswith("Unnamed")]
-    df_limpio = df[columnas_limpias].drop(columns=["FECHA_DT", "ANIO"], errors='ignore')
-    
-    engine = create_engine(DB_URL.replace("postgresql://", "postgresql+psycopg2://"))
-    df_limpio.to_sql('ventas', engine, if_exists='replace', index=False)
-    
-    # Limpiamos la caché para que obligatoriamente vuelva a descargar los nuevos datos actualizados
-    st.cache_data.clear()
-    verificar_y_ejecutar_respaldo(df_limpio)
 
 df_base = cargar_datos()
 df_base = df_base.sort_values(by="FECHA_DT", ascending=False, na_position='last').reset_index(drop=True)
@@ -289,7 +276,6 @@ with tab_visualizar:
         if col in df_vista.columns:
             df_vista[col] = df_vista[col].map("${:,.0f}".format)
 
-    # El cuadro ahora ocupará todo el tamaño gigante horizontal de la pantalla de PC
     st.dataframe(df_vista.drop(columns=["FECHA_DT", "ANIO"], errors='ignore'), use_container_width=True, height=500)
 
     if not df_metricas.empty:
@@ -355,16 +341,22 @@ with tab_registrar:
         f_observaciones = st.text_area("OBSERVACIONES")
         
         if st.form_submit_button("💾 Guardar en Base de Datos"):
-            nueva_fila = pd.DataFrame([{
-                "FECHA": f"{f_fecha.day}/{f_fecha.month}/{f_fecha.year}", 
-                "CEDULA": f_cedula, "ID": f_id, "NOMBRE": f_nombre.upper(),
-                "DIRECCION": f_direccion.upper(), "TELEFONO": f_telefono, "TECNICO": f_tecnico.upper(),
-                "VALOR": f_valor, "VENDEDOR": f_vendedor.upper(), "ESTADO FINAL": f_est_final.upper(),
-                "ESTADO PAGO": f_est_pago.upper(), "NUMERO DE CUENTA": f_cuenta, "OBSERVACIONES": f_observaciones,
-                "Pago Vanti (8%)": f_valor * 0.08, "Comision Vendedor (35%)": f_valor * 0.35, "Ganancia Camacho": f_valor * 0.57
-            }])
-            df_actualizado = pd.concat([nueva_fila, df_base.drop(columns=["FECHA_DT", "ANIO"], errors='ignore')], ignore_index=True)
-            guardar_datos_sql(df_actualizado)
+            # Inserción eficiente de una única fila
+            conn = obtener_conexion()
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO ventas ("FECHA", "CEDULA", "ID", "NOMBRE", "DIRECCION", "TELEFONO", "TECNICO", "VALOR", "VENDEDOR", "ESTADO FINAL", "ESTADO PAGO", "NUMERO DE CUENTA", "OBSERVACIONES")
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                f"{f_fecha.day}/{f_fecha.month}/{f_fecha.year}", f_cedula, f_id, f_nombre.upper(),
+                f_direccion.upper(), f_telefono, f_tecnico.upper(), float(f_valor), f_vendedor.upper(),
+                f_est_final.upper(), f_est_pago.upper(), f_cuenta, f_observaciones
+            ))
+            conn.commit()
+            conn.close()
+            
+            st.cache_data.clear()
+            verificar_y_ejecutar_respaldo()
             mostrar_mensaje_central("✅ ¡Cliente registrado con éxito!", "success")
             st.rerun()
 
@@ -375,10 +367,22 @@ with tab_editar:
         c_des1, c_des2 = st.columns(2)
         with c_des1:
             if st.button("↩️ Sí, deshacer y recuperar el registro"):
-                fila_recuperada = pd.DataFrame([st.session_state['ultimo_eliminado']])
-                df_actual = cargar_datos()
-                df_restaurado = pd.concat([fila_recuperada, df_actual.drop(columns=["FECHA_DT", "ANIO"], errors='ignore')], ignore_index=True)
-                guardar_datos_sql(df_restaurado)
+                recup = st.session_state['ultimo_eliminado']
+                
+                conn = obtener_conexion()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO ventas ("FECHA", "CEDULA", "ID", "NOMBRE", "DIRECCION", "TELEFONO", "TECNICO", "VALOR", "VENDEDOR", "ESTADO FINAL", "ESTADO PAGO", "NUMERO DE CUENTA", "OBSERVACIONES")
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    recup["FECHA"], recup["CEDULA"], recup["ID"], recup["NOMBRE"],
+                    recup["DIRECCION"], recup["TELEFONO"], recup["TECNICO"], float(recup["VALOR"]),
+                    recup["VENDEDOR"], recup["ESTADO FINAL"], recup["ESTADO PAGO"], recup["NUMERO DE CUENTA"], recup["OBSERVACIONES"]
+                ))
+                conn.commit()
+                conn.close()
+                
+                st.cache_data.clear()
                 st.session_state['ultimo_eliminado'] = None
                 mostrar_mensaje_central("✅ ¡Registro recuperado con éxito!", "success")
                 st.rerun()
@@ -392,11 +396,11 @@ with tab_editar:
         diccionario_busqueda = {}
         for index, row in df_base.iterrows():
             texto_busqueda = f"👤 {row['NOMBRE']} | 🆔 ID: {row['ID']} | 💳 Céd: {row['CEDULA']} | 💼 Vend: {row['VENDEDOR']}"
-            diccionario_busqueda[texto_busqueda] = index
+            diccionario_busqueda[texto_busqueda] = row['ID']
             
         opcion_seleccionada = st.selectbox("🔍 Escribe aquí para buscar el registro:", options=list(diccionario_busqueda.keys()))
-        indice_real = diccionario_busqueda[opcion_seleccionada]
-        fila_datos = df_base.loc[indice_real]
+        id_real = diccionario_busqueda[opcion_seleccionada]
+        fila_datos = df_base[df_base['ID'] == id_real].iloc[0]
         
         texto_whatsapp = (
             f"👤 *Nombre:* {fila_datos['NOMBRE']}\n"
@@ -440,26 +444,26 @@ with tab_editar:
                 btn_eliminar = st.form_submit_button("❌ Eliminar Registro Definitivamente")
                 
             if btn_actualizar:
-                df_base.loc[indice_real, "FECHA"] = e_fecha
-                df_base.loc[indice_real, "CEDULA"] = e_cedula
-                df_base.loc[indice_real, "NOMBRE"] = e_nombre.upper()
-                df_base.loc[indice_real, "DIRECCION"] = e_direccion.upper()
-                df_base.loc[indice_real, "TELEFONO"] = e_telefono
-                df_base.loc[indice_real, "TECNICO"] = e_tecnico.upper()
-                df_base.loc[indice_real, "VALOR"] = e_valor
-                df_base.loc[indice_real, "VENDEDOR"] = e_vendedor.upper()
-                df_base.loc[indice_real, "ESTADO FINAL"] = e_est_final.upper()
-                df_base.loc[indice_real, "ESTADO PAGO"] = e_est_pago.upper()
-                df_base.loc[indice_real, "NUMERO DE CUENTA"] = e_cuenta
-                df_base.loc[indice_real, "OBSERVACIONES"] = e_observaciones
+                # Update dirigido únicamente a las columnas del ID correspondiente
+                conn = obtener_conexion()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE ventas 
+                    SET "FECHA"=%s, "CEDULA"=%s, "NOMBRE"=%s, "DIRECCION"=%s, "TELEFONO"=%s, "TECNICO"=%s, 
+                        "VALOR"=%s, "VENDEDOR"=%s, "ESTADO FINAL"=%s, "ESTADO PAGO"=%s, "NUMERO DE CUENTA"=%s, "OBSERVACIONES"=%s
+                    WHERE "ID"=%s
+                """, (
+                    e_fecha, e_cedula, e_nombre.upper(), e_direccion.upper(), e_telefono, e_tecnico.upper(),
+                    float(e_valor), e_vendedor.upper(), e_est_final.upper(), e_est_pago.upper(), e_cuenta, e_observaciones,
+                    str(id_real)
+                ))
+                conn.commit()
+                conn.close()
                 
-                df_base.loc[indice_real, "Pago Vanti (8%)"] = e_valor * 0.08
-                df_base.loc[indice_real, "Comision Vendedor (35%)"] = e_valor * 0.35
-                df_base.loc[indice_real, "Ganancia Camacho"] = e_valor * 0.57
-                
-                guardar_datos_sql(df_base)
+                st.cache_data.clear()
+                verificar_y_ejecutar_respaldo()
                 mostrar_mensaje_central("🔄 ¡Registro actualizado correctamente!", "success")
                 st.rerun()
                 
             if btn_eliminar:
-                confirmar_eliminar(indice_real, fila_datos)
+                confirmar_eliminar(id_real, fila_datos)
