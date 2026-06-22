@@ -49,7 +49,7 @@ def mostrar_mensaje_central(mensaje, tipo="success"):
             {mensaje}
         </div>
     """, unsafe_allow_html=True)
-    time.sleep(2)
+    time.sleep(1)
     marcador.empty()
 
 @st.dialog("⚠️ Confirmar eliminación")
