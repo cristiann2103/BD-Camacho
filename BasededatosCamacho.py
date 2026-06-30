@@ -137,7 +137,7 @@ def cargar_datos():
 
 def enviar_respaldo_automatico(df_limpio):
     correo_emisor = "camachoconstruccionespqr@gmail.com"
-    password = "inunlpcwyxqhwnkx"
+    password = "ededwwinnkczewxy"
     correo_receptor = "camachoconstruccionespqr@gmail.com"
 
     buffer = io.BytesIO()
